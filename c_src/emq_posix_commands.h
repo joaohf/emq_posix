@@ -24,9 +24,13 @@
 
 #define OPEN_QUEUE_RDONLY 0
 #define OPEN_QUEUE_WDONLY 1
-#define OPEN_QUEUE_RDWR 2
-
-#define CREATE_QUEUE 1
+#define OPEN_QUEUE_RDWR   2
+#define CREATE_QUEUE_RDONLY 3
+#define CREATE_QUEUE_WDONLY 4
+#define CREATE_QUEUE_RDWR 5
+#define CLOSE_QUEUE 6
+#define REMOVE_QUEUE 7
+#define GETATTR_QUEUE 8
 
 #define _OK 0
 #define _ERROR_QS_ROOM -10

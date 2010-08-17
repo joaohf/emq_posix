@@ -61,6 +61,8 @@ static void ok(state *st);
 static void error_tuple(state *st, int code);
 static void boolean(state *st, int code);
 
+static void encode_ok_queue(state *st, int queue);
+
 void tuple(ei_x_buff *eixb, int size);
 void atom(ei_x_buff *eixb, const char *str, int size);
 void integer(ei_x_buff *eixb, int integer);
@@ -70,15 +72,22 @@ int findfreewindowslot(state *st);
 void loop_getch(void *arg);
 
 static void do_open_queue(state *st, int flag);
+static void do_create_queue(state *st, int flag);
+static void do_close_queue(state *st);
+static void do_remove_queue(state *st);
+static void do_getattr_queue(state *st);
 
 // =============================================================================
 // Erlang Callbacks
 // =============================================================================
 static ErlDrvData start(ErlDrvPort port, char *command) {
   state *drvstate = (state *)driver_alloc(sizeof(state));
+
+  memset(&drvstate, 0, sizeof(state));
+
   drvstate->drv_port = port;
   set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
-  memset(&drvstate.queues, 0, sizeof(drvstate.queues));
+
   return (ErlDrvData)drvstate;
 }
 
@@ -110,12 +119,16 @@ static int control(ErlDrvData drvstate, unsigned int command, char *args,
 
   switch (command) {
   case OPEN_QUEUE_RDONLY: do_open_queue(st, O_RDONLY); break;
-  case OPEN_QUEUE_WDONLY: do_open_queue(st, O_WDONLY); break;
+  case OPEN_QUEUE_WDONLY: do_open_queue(st, O_WRONLY); break;
   case OPEN_QUEUE_RDWR: do_open_queue(st, O_RDWR); break;
 
   case CREATE_QUEUE_RDONLY: do_create_queue(st, O_RDONLY | O_CREAT); break;
   case CREATE_QUEUE_WDONLY: do_create_queue(st, O_WDONLY | O_CREAT); break;
   case CREATE_QUEUE_RDWR: do_create_queue(st, O_RDWR | O_CREAT); break;
+
+  case CLOSE_QUEUE: do_close_queue(st); break;
+  case REMOVE_QUEUE: do_remove_queue(st); break;
+  case GETATTR_QUEUE: do_getattr_queue(st); break;
 
   default: break;
   }
@@ -145,10 +158,9 @@ void do_initselect(state *st, state_queue *q) {
 
 static void do_open_queue(state *st, int flag) {
 
-	state_queue *q;
 	char qname[255];
-	int rs;
-	int arity;
+	int rs = 0;
+	int arity = 0;
 	long isblocking = 0;
 
 	ei_decode_tuple_header(st->args, &(st->index), &arity);
@@ -159,52 +171,124 @@ static void do_open_queue(state *st, int flag) {
 	ei_decode_long(st->args, &(st->index), &isblocking);
 
 	/* do the job */
-	q = get_next_queue(st);
-
-	if (q == NULL) {
-	  goto error;
-	}
-
 	rs = mq_open(qname, flag | isblocking);
 
 	if (rs < 0) {
       goto error_mq;
 	}
 
-    q->fd_queue = rs;
-
     encode_ok_queue(st, rs);
     return;
 
-	error:
-	encode_ok_reply(st, _ERROR_QS_ROOM);
-	return;
-
 	error_mq:
-	set_queue_inuse_state(q);
 	encode_ok_reply(st, errno);
 	return;
-
 }
 
-void do_create_queue(state *st, int flag) {
+static void do_create_queue(state *st, int flag) {
 
 	char *qname  = NULL;
 	mode_t qmode = 0;
 	struct mq_attr qattr;
 	struct mq_attr *qattr_aux = NULL;
-	int rs;
+	int rs = 0;
+	int arity = 0;
+	long isblocking = 0;
 
+	ei_decode_tuple_header(st->args, &(st->index), &arity);
+
+	/* name of queue? */
+	ei_decode_string(st->args, &(st->index), qname);
+	/* is blocking? */
+	ei_decode_long(st->args, &(st->index), &isblocking);
+
+	/* do the job */
 	rs = mq_open(qname, flag, qmode, qattr_aux);
 
 	if (rs < 0) {
-
+      goto error_mq;
 	}
 
-	q = get_next_queue(st);
+    encode_ok_queue(st, rs);
+    return;
 
-	q->fd_queue = rs;
-	q->inuse = 1;
+	error_mq:
+	encode_ok_reply(st, errno);
+	return;
+}
+
+static void do_close_queue(state *st) {
+
+	int rs = 0;
+	int arity = 0;
+	long qdesc = 0;
+
+	ei_decode_tuple_header(st->args, &(st->index), &arity);
+
+	/* queue desc */
+	ei_decode_long(st->args, &(st->index), &qdesc);
+
+	rs = mq_close((mqd_t)qdesc);
+
+	if (rs < 0) {
+      goto error_mq;
+	}
+
+    encode_ok_reply(st, rs);
+    return;
+
+	error_mq:
+	encode_ok_reply(st, errno);
+	return;
+}
+
+static void do_remove_queue(state *st) {
+	int rs = 0;
+	int arity = 0;
+	char qname[255];;
+
+	ei_decode_tuple_header(st->args, &(st->index), &arity);
+
+	/* name of queue? */
+	ei_decode_string(st->args, &(st->index), qname);
+
+	rs = mq_unlink(qname);
+
+	if (rs < 0) {
+      goto error_mq;
+	}
+
+    encode_ok_reply(st, rs);
+    return;
+
+	error_mq:
+	encode_ok_reply(st, errno);
+	return;
+}
+
+static void do_getattr_queue(state *st) {
+	int rs = 0;
+	int arity = 0;
+	long qdesc = -1;
+	struct mq_attr qstat;
+
+	ei_decode_tuple_header(st->args, &(st->index), &arity);
+
+	/* queue desc */
+	ei_decode_long(st->args, &(st->index), &qdesc);
+
+	rs = mq_getattr(qdesc, &qstat);
+
+	if (rs < 0) {
+      goto error_mq;
+	}
+
+    encode_ok_reply(st, rs);
+    return;
+
+	error_mq:
+	encode_ok_reply(st, errno);
+	return;
 }
 
 #if 0
@@ -599,17 +683,19 @@ void encode_ok_reply(state *st, int code) {
   }
 }
 
-void encode_ok_queue(state *st, int queue) {
+static void encode_ok_queue(state *st, int queue) {
     queue_tuple(st, queue);
 }
 
 
+#if 0
 int findfreewindowslot(state *st) {
   int i;
   for (i = 0; i < _MAXWINDOWS; i++)
     if (st->win[i] == NULL) return i;
   return -1;
 }
+#endif
 
 // =============================================================================
 // Erlang driver_entry Specification
