@@ -31,6 +31,7 @@
 #define CLOSE_QUEUE 6
 #define REMOVE_QUEUE 7
 #define GETATTR_QUEUE 8
+#define SELECT_QUEUE 9
 
 #define _OK 0
 #define _ERROR_QS_ROOM -10

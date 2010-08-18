@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <stdbool.h>
 #include <fcntl.h>           /* For O_* constants */
 #include <sys/stat.h>        /* For mode constants */
 #include <mqueue.h>
@@ -45,7 +46,7 @@ typedef struct {
 
 /* State structure */
 typedef struct {
-  state_queue queues[_MAXQUEUES+1];
+  state_queue mq[_MAXQUEUES+1];
   ei_x_buff eixb;
   char *args;
   int argslen;
@@ -60,7 +61,7 @@ static void set_queue_inuse_state(state_queue *q);
 static void ok(state *st);
 static void error_tuple(state *st, int code);
 static void boolean(state *st, int code);
-
+static void queue_data(ei_x_buff *eixb, void *msg, int size);
 static void encode_ok_queue(state *st, int queue);
 
 void tuple(ei_x_buff *eixb, int size);
@@ -76,6 +77,7 @@ static void do_create_queue(state *st, int flag);
 static void do_close_queue(state *st);
 static void do_remove_queue(state *st);
 static void do_getattr_queue(state *st);
+static void do_initselect(state *st);
 
 // =============================================================================
 // Erlang Callbacks
@@ -95,21 +97,56 @@ static void stop(ErlDrvData drvstate) {
   state *st = (state *)drvstate;
   int i;
   for (i = 0; i < _MAXQUEUES; i++) {
-	if (st.queues[i].inuse) {
-      driver_select(st->drv_port, (ErlDrvEvent)fileno(st.queues[i].fd_queue), ERL_DRV_READ, 0);
+	if (st->mq[i].inuse) {
+      driver_select(st->drv_port, (ErlDrvEvent)(st->mq[i].fd_queue), ERL_DRV_READ, 0);
 	}
   }
   driver_free(drvstate);
 }
 
-static void do_getch(ErlDrvData drvstate, ErlDrvEvent event) {
+static void do_readmq(ErlDrvData drvstate, ErlDrvEvent event) {
   state *st = (state *)drvstate;
   ei_x_buff eixb;
   int keycode;
+  ssize_t smq = 0;
+  char *msg_ptr = NULL;
+  size_t msg_len = 0;
+  unsigned int msg_prio = 0;
+  int rs = 0;
+  struct mq_attr attr;
+
   ei_x_new_with_version(&eixb);
-  keycode = getch();
-  integer(&eixb, keycode);
+
+
+  rs = mq_getattr((mqd_t) event, &attr);
+  if ( rs < 0 ) {
+	  goto mq_error;
+  }
+
+  if ( !(attr.mq_msgsize > 0) ) {
+	  goto mq_error;
+  }
+
+  msg_len = attr.mq_msgsize;
+  msg_ptr = driver_alloc(msg_len);
+  if (msg_ptr == NULL) {
+	  goto error;
+  }
+
+  smq = mq_receive((mqd_t) event, msg_ptr, msg_len, &msg_prio);
+  if ( smq < 0 ) {
+	  goto mq_error;
+  }
+
+  queue_data(&eixb, msg_ptr, smq);
+
   driver_output(st->drv_port, eixb.buff, eixb.index);
+
+  error:
+  return;
+
+  mq_error:
+  return;
 }
 
 static int control(ErlDrvData drvstate, unsigned int command, char *args,
@@ -123,12 +160,14 @@ static int control(ErlDrvData drvstate, unsigned int command, char *args,
   case OPEN_QUEUE_RDWR: do_open_queue(st, O_RDWR); break;
 
   case CREATE_QUEUE_RDONLY: do_create_queue(st, O_RDONLY | O_CREAT); break;
-  case CREATE_QUEUE_WDONLY: do_create_queue(st, O_WDONLY | O_CREAT); break;
+  case CREATE_QUEUE_WDONLY: do_create_queue(st, O_WRONLY | O_CREAT); break;
   case CREATE_QUEUE_RDWR: do_create_queue(st, O_RDWR | O_CREAT); break;
 
   case CLOSE_QUEUE: do_close_queue(st); break;
   case REMOVE_QUEUE: do_remove_queue(st); break;
   case GETATTR_QUEUE: do_getattr_queue(st); break;
+
+  case SELECT_QUEUE: do_initselect(st); break;
 
   default: break;
   }
@@ -146,14 +185,14 @@ static int control(ErlDrvData drvstate, unsigned int command, char *args,
 // MQ Posix function wrappers
 // ===========================================================================
 
-void do_initselect(state *st, state_queue *q) {
-  st->win[0] = (WINDOW *)initscr();
-  driver_select(st->drv_port, (ErlDrvEvent)fileno(stdin), DO_READ, 1);
-  if (st->win[0] == NULL) {
-    encode_ok_reply(st, -1);
-  } else {
-    encode_ok_reply(st, 0);
-  }
+void do_initselect(state *st) {
+//  st->win[0] = (WINDOW *)initscr();
+//  driver_select(st->drv_port, (ErlDrvEvent)fileno(stdin), DO_READ, 1);
+//  if (st->win[0] == NULL) {
+//    encode_ok_reply(st, -1);
+//  } else {
+//    encode_ok_reply(st, 0);
+//  }
 }
 
 static void do_open_queue(state *st, int flag) {
@@ -188,22 +227,32 @@ static void do_open_queue(state *st, int flag) {
 static void do_create_queue(state *st, int flag) {
 
 	char *qname  = NULL;
-	mode_t qmode = 0;
+	long qmode = 0;
 	struct mq_attr qattr;
-	struct mq_attr *qattr_aux = NULL;
+	struct mq_attr qattr_aux;
 	int rs = 0;
 	int arity = 0;
 	long isblocking = 0;
 
+	memset(&qattr, 0, sizeof(qattr));
+
+	/*   name isblocking mode nqueue squeue
+	 * { qname, 1, 777, 20, 200 } */
 	ei_decode_tuple_header(st->args, &(st->index), &arity);
 
 	/* name of queue? */
 	ei_decode_string(st->args, &(st->index), qname);
 	/* is blocking? */
 	ei_decode_long(st->args, &(st->index), &isblocking);
+	/* mode? */
+	ei_decode_long(st->args, &(st->index), &qmode);
+	/* Max. # of messages on queue */
+	ei_decode_long(st->args, &(st->index), &qattr.mq_maxmsg);
+    /* Max. message size (bytes) */
+    ei_decode_long(st->args, &(st->index), &qattr.mq_msgsize);
 
 	/* do the job */
-	rs = mq_open(qname, flag, qmode, qattr_aux);
+	rs = mq_open(qname, flag | isblocking, qmode, &qattr_aux);
 
 	if (rs < 0) {
       goto error_mq;
@@ -629,7 +678,7 @@ static state_queue *get_next_queue(state *st) {
 
   q->inuse = 1;
 
-  return &st.queues[0];
+  return &st->mq[0];
 }
 
 static void set_queue_inuse_state(state_queue *q) {
@@ -653,10 +702,14 @@ void queue_tuple(state *st, int queue) {
 }
 
 void boolean(state *st, int code) {
-  if (code == TRUE)
+  if (code == true)
     atom(&(st->eixb),"true",4);
   else
     atom(&(st->eixb),"false",5);
+}
+
+void queue_data(ei_x_buff *eixb, void *msg, int size) {
+  ei_x_encode_tuple_header(eixb, size);
 }
 
 void tuple(ei_x_buff *eixb, int size) {
@@ -705,7 +758,7 @@ ErlDrvEntry driver_entry = {
   start,
   stop,
   NULL,
-  do_getch,
+  do_readmq,
   NULL,
   "emq_posix",
   NULL,
