@@ -1,4 +1,4 @@
-%% Copyright (c) 2010, Mazen Harake
+%% Copyright (c) 2010, João Henrique Ferreira de Freitas 
 %% All rights reserved.
 %%
 %% Redistribution and use in source and binary forms, with or without

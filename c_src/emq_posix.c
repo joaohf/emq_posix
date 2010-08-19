@@ -81,7 +81,7 @@ static void do_send_queue(state *st);
 static void do_receive_queue(state *st);
 static void do_initselect(state *st);
 
-#define p(x) printf x
+#define P(x) do { printf x;} while(0);
 
 // =============================================================================
 // Erlang Callbacks
@@ -94,7 +94,7 @@ static ErlDrvData start(ErlDrvPort port, char *command) {
   drvstate->drv_port = port;
   set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
 
-  p(("Start\n"));
+  P(("Start\n"));
 
   return (ErlDrvData)drvstate;
 }
@@ -160,7 +160,7 @@ static int control(ErlDrvData drvstate, unsigned int command, char *args,
   state *st = (state *)drvstate;
   init_state(st, args, argslen);
 
-  p(("comando: %d\n", command));
+  P(("comando: %d\n", command));
 
   switch (command) {
   case OPEN_QUEUE_RDONLY: do_open_queue(st, O_RDONLY); break;
@@ -263,7 +263,7 @@ static void do_create_queue(state *st, int flag) {
     /* Max. message size (bytes) */
     ei_decode_long(st->args, &(st->index), &qattr.mq_msgsize);
 
-    p(("criando fila: %s %d %d %d %d %d\n", qname, isblocking, flag, qmode, qattr.mq_maxmsg, qattr.mq_msgsize));
+    P(("criando fila: %s %d %d %d %d %d\n", qname, isblocking, flag, qmode, qattr.mq_maxmsg, qattr.mq_msgsize));
 
 	/* do the job */
 	rs = mq_open(qname, flag | isblocking, qmode, &qattr);
@@ -277,7 +277,7 @@ static void do_create_queue(state *st, int flag) {
 
 	error_mq:
 	l = strerror(errno);
-	p(("%s\n", l));
+	P(("%s\n", l));
 	encode_ok_reply(st, errno);
 	return;
 }
@@ -373,7 +373,7 @@ static void do_send_queue(state *st) {
 
 	ei_decode_binary(st->args, &(st->index), qmsg, &qmsg_size);
 
-	p(("Enviando %d %d %d '%s'", qdesc, qmsg_size, qprio, qmsg));
+	P(("Enviando %d %d %d '%s'", qdesc, qmsg_size, qprio, qmsg));
 
 	rs = mq_send(qdesc, qmsg, qmsg_size, qprio);
 	if ( rs < 0) {
