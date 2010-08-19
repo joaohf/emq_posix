@@ -1,14 +1,16 @@
 .PHONY: all clean
 
+ERLBIN      := /opt/erlang/bin/erl
+
 UNAME       := $(shell uname)
 
 BEAMS       := $(patsubst src/%, ebin/%, $(patsubst %.erl, %.beam, $(wildcard src/*.erl)))
 ECINCLUDES  := -I include
 ECFLAGS     := +debug_info
 
-ERLDIR      := $(shell erl -noinput -eval 'io:format("~s",[code:root_dir()]),halt().')
-ERTSVERS    := $(shell erl -noinput -eval 'io:format("~s",[erlang:system_info(version)]),halt().')
-ERLINTRFCE  := $(shell erl -noinput -eval 'io:format("~s",[filename:basename(code:lib_dir(erl_interface))]),halt().')
+ERLDIR      := $(shell $(ERLBIN) -noinput -eval 'io:format("~s",[code:root_dir()]),halt().')
+ERTSVERS    := $(shell $(ERLBIN) -noinput -eval 'io:format("~s",[erlang:system_info(version)]),halt().')
+ERLINTRFCE  := $(shell $(ERLBIN) -noinput -eval 'io:format("~s",[filename:basename(code:lib_dir(erl_interface))]),halt().')
 DRIVER      := priv/emq_posix.so
 
 ifeq ($(UNAME),Linux)
