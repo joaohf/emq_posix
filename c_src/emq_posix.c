@@ -56,13 +56,13 @@ typedef struct {
 } state;
 
 static void init_state(state *st, char *args, int argslen);
-static state_queue *get_next_queue(state *st);
-static void set_queue_inuse_state(state_queue *q);
+static state_queue *insert_next_queue(state *st, int qdesc);
 static void ok(state *st);
 static void error_tuple(state *st, int code);
 static void boolean(state *st, int code);
 static void queue_data(ei_x_buff *eixb, const void *msg, int size, unsigned int prio);
 static void encode_ok_queue(state *st, int queue);
+static void encode_queue_attr(st, long mq_flags, long mq_maxmsg, long mq_msgsize, long mq_curmsgs);
 
 void tuple(ei_x_buff *eixb, int size);
 void atom(ei_x_buff *eixb, const char *str, int size);
@@ -79,7 +79,8 @@ static void do_remove_queue(state *st);
 static void do_getattr_queue(state *st);
 static void do_send_queue(state *st);
 static void do_receive_queue(state *st);
-static void do_initselect(state *st);
+static void do_initselect_queue(state *st);
+static void do_deselect_queue(state *st);
 
 #define p(x) printf x
 
@@ -178,7 +179,8 @@ static int control(ErlDrvData drvstate, unsigned int command, char *args,
   case REMOVE_QUEUE: do_remove_queue(st); break;
   case GETATTR_QUEUE: do_getattr_queue(st); break;
 
-  case SELECT_QUEUE: do_initselect(st); break;
+  case SELECT_QUEUE: do_initselect_queue(st); break;
+  case DESELECT_QUEUE: do_deselect_queue(st); break;
 
   default: break;
   }
@@ -196,14 +198,61 @@ static int control(ErlDrvData drvstate, unsigned int command, char *args,
 // MQ Posix function wrappers
 // ===========================================================================
 
-void do_initselect(state *st) {
-//  st->win[0] = (WINDOW *)initscr();
-//  driver_select(st->drv_port, (ErlDrvEvent)fileno(stdin), DO_READ, 1);
-//  if (st->win[0] == NULL) {
-//    encode_ok_reply(st, -1);
-//  } else {
-//    encode_ok_reply(st, 0);
-//  }
+static void do_initselect_queue(state *st) {
+
+  int rs = 0;
+  int arity = 0;
+  long qdesc = 0;
+  state_queue *q;
+
+  ei_decode_tuple_header(st->args, &(st->index), &arity);
+  /* queue desc */
+  ei_decode_long(st->args, &(st->index), &qdesc);
+
+  q = insert_next_queue(st, qdesc);
+
+  if (q == NULL) {
+    goto error;
+  }
+
+  encode_ok_reply(st, 0);
+
+  driver_select(st->drv_port, (ErlDrvEvent)qdesc, DO_READ, 1);
+
+  return;
+
+  error:
+  encode_ok_reply(st, -1);
+  return;
+
+}
+
+static void do_deselect_queue(state *st) {
+
+  int rs = 0;
+  int arity = 0;
+  long qdesc = 0;
+
+  ei_decode_tuple_header(st->args, &(st->index), &arity);
+  /* queue desc */
+  ei_decode_long(st->args, &(st->index), &qdesc);
+
+  rs = remove_next_queue(st, qdesc);
+
+  if (rs < 0) {
+    goto error;
+  }
+
+  driver_select(st->drv_port, (ErlDrvEvent)qdesc, DO_READ, 0);
+
+  encode_ok_reply(st, 0);
+
+  return;
+
+  error:
+  encode_ok_reply(st, -1);
+  return;
+
 }
 
 static void do_open_queue(state *st, int flag) {
@@ -214,7 +263,6 @@ static void do_open_queue(state *st, int flag) {
 	long isblocking = 0;
 
 	ei_decode_tuple_header(st->args, &(st->index), &arity);
-
 	/* name of queue? */
 	ei_decode_string(st->args, &(st->index), qname);
 	/* is blocking? */
@@ -244,14 +292,10 @@ static void do_create_queue(state *st, int flag) {
 	int arity = 0;
 	long isblocking = 0;
 
-	char *l;
-
 	memset(&qattr, 0, sizeof(qattr));
 
-	/*   name isblocking mode nqueue squeue
-	 * { qname, 1, 777, 20, 200 } */
+	/* name isblocking mode nqueue squeue */
 	ei_decode_tuple_header(st->args, &(st->index), &arity);
-
 	/* name of queue? */
 	ei_decode_string(st->args, &(st->index), qname);
 	/* is blocking? */
@@ -276,8 +320,6 @@ static void do_create_queue(state *st, int flag) {
     return;
 
 	error_mq:
-	l = strerror(errno);
-	p(("%s\n", l));
 	encode_ok_reply(st, errno);
 	return;
 }
@@ -289,7 +331,6 @@ static void do_close_queue(state *st) {
 	long qdesc = 0;
 
 	ei_decode_tuple_header(st->args, &(st->index), &arity);
-
 	/* queue desc */
 	ei_decode_long(st->args, &(st->index), &qdesc);
 
@@ -313,7 +354,6 @@ static void do_remove_queue(state *st) {
 	char qname[255];;
 
 	ei_decode_tuple_header(st->args, &(st->index), &arity);
-
 	/* name of queue? */
 	ei_decode_string(st->args, &(st->index), qname);
 
@@ -338,7 +378,6 @@ static void do_getattr_queue(state *st) {
 	struct mq_attr qstat;
 
 	ei_decode_tuple_header(st->args, &(st->index), &arity);
-
 	/* queue desc */
 	ei_decode_long(st->args, &(st->index), &qdesc);
 
@@ -348,7 +387,7 @@ static void do_getattr_queue(state *st) {
       goto error_mq;
 	}
 
-    encode_ok_reply(st, rs);
+    encode_queue_attr(st, qstat.mq_flags, qstat.mq_maxmsg, qstat.mq_msgsize, qstat.mq_curmsgs);
     return;
 
 	error_mq:
@@ -363,13 +402,30 @@ static void do_send_queue(state *st) {
 	long qprio;
 	long qsize;
 	long qmsg_size;
-	void *qmsg;
+	void *qmsg = NULL;
 	int rs = 0;
+	int type = 0;
+	int type_size = 0;
 
 	ei_decode_tuple_header(st->args, &(st->index), &arity);
 	ei_decode_long(st->args, &(st->index), &qdesc);
 	ei_decode_long(st->args, &(st->index), &qprio);
 	ei_decode_long(st->args, &(st->index), &qsize);
+
+	ei_get_type(st->args, &(st->index), &type, &type_size);
+
+	if (type != ERL_BINARY_EXT) {
+		goto error;
+	}
+
+    qmsg = driver_alloc(type_size);
+	if (qmsg == NULL) {
+		goto error;
+	}
+
+	if (qsize != type_size) {
+		p(("Send size differ\n"));
+	}
 
 	ei_decode_binary(st->args, &(st->index), qmsg, &qmsg_size);
 
@@ -380,13 +436,19 @@ static void do_send_queue(state *st) {
 		goto error_mq;
 	}
 
+	driver_free(qmsg);
+
 	encode_ok_reply(st, rs);
 	return;
 
 	error:
+	encode_ok_reply(st, -1);
 	return;
 
 	error_mq:
+	if (qmsg != NULL) {
+	  driver_free(qmsg);
+	}
 	encode_ok_reply(st, errno);
 	return;
 }
@@ -403,7 +465,6 @@ static void do_receive_queue(state *st) {
 	long qdesc = -1;
 
 	ei_decode_tuple_header(st->args, &(st->index), &arity);
-
 	/* queue desc */
 	ei_decode_long(st->args, &(st->index), &qdesc);
 
@@ -434,9 +495,14 @@ static void do_receive_queue(state *st) {
 	return;
 
 	error:
+	encode_ok_reply(st, -1);
 	return;
 
 	mq_error:
+	if (msg_ptr != NULL) {
+	  driver_free(msg_ptr);
+	}
+	encode_ok_reply(st, errno);
 	return;
 }
 
@@ -454,17 +520,21 @@ void init_state(state *st, char *args, int argslen) {
   ei_x_new_with_version(&(st->eixb));
 }
 
-static state_queue *get_next_queue(state *st) {
+static state_queue *insert_next_queue(state *st, int qdesc) {
 
   state_queue *q;
 
+  memset(q, 0, sizeof(state_queue));
+
+  q->fd_queue = qdesc;
   q->inuse = 1;
 
   return &st->mq[0];
 }
 
-static void set_queue_inuse_state(state_queue *q) {
-	memset(q, 0, sizeof(state_queue));
+static int remove_next_queue(state *st, int qdesc) {
+
+	return 1;
 }
 
 static void ok(state *st) {
@@ -491,7 +561,9 @@ void boolean(state *st, int code) {
 }
 
 static void queue_data(ei_x_buff *eixb, const void *msg, int size, unsigned int prio) {
-  ei_x_encode_tuple_header(eixb, 3);
+  ei_x_encode_tuple_header(eixb, 4);
+
+  atom(&eixb, "data", 4);
 
   ei_x_encode_long(eixb, prio);
 
@@ -526,6 +598,15 @@ void encode_ok_reply(state *st, int code) {
 
 static void encode_ok_queue(state *st, int queue) {
     queue_tuple(st, queue);
+}
+
+static void encode_queue_attr(st, long mq_flags, long mq_maxmsg, long mq_msgsize, long mq_curmsgs) {
+	tuple(&(st->eixb), 2);
+	atom(&(st->eixb), "attr", 4);
+	integer(&(st->eixb), mq_flags);
+	integer(&(st->eixb), mq_maxmsg);
+	integer(&(st->eixb), mq_msgsize);
+	integer(&(st->eixb), mq_curmsgs);
 }
 
 #if 0

@@ -34,6 +34,8 @@
 #define SELECT_QUEUE 9
 #define RECEIVE_QUEUE 10
 #define SEND_QUEUE 11
+#define SELECT_QUEUE 12
+#define DESELECT_QUEUE 13
 
 #define _OK 0
 #define _ERROR_QS_ROOM -10
