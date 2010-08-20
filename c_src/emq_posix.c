@@ -55,14 +55,16 @@ typedef struct {
   ErlDrvPort drv_port;
 } state;
 
+static void data_dump(intptr_t *p, size_t n);
 static void init_state(state *st, char *args, int argslen);
 static state_queue *insert_next_queue(state *st, int qdesc);
+static int remove_next_queue(state *st, int qdesc);
 static void ok(state *st);
 static void error_tuple(state *st, int code);
 static void boolean(state *st, int code);
 static void queue_data(ei_x_buff *eixb, const void *msg, int size, unsigned int prio);
 static void encode_ok_queue(state *st, int queue);
-static void encode_queue_attr(st, long mq_flags, long mq_maxmsg, long mq_msgsize, long mq_curmsgs);
+static void encode_queue_attr(state *st, long mq_flags, long mq_maxmsg, long mq_msgsize, long mq_curmsgs);
 
 void tuple(ei_x_buff *eixb, int size);
 void atom(ei_x_buff *eixb, const char *str, int size);
@@ -83,6 +85,7 @@ static void do_initselect_queue(state *st);
 static void do_deselect_queue(state *st);
 
 #define P(x) do { printf x;} while(0);
+#define ENABLE_DATA_DUMP 1
 
 // =============================================================================
 // Erlang Callbacks
@@ -200,7 +203,6 @@ static int control(ErlDrvData drvstate, unsigned int command, char *args,
 
 static void do_initselect_queue(state *st) {
 
-  int rs = 0;
   int arity = 0;
   long qdesc = 0;
   state_queue *q;
@@ -307,7 +309,7 @@ static void do_create_queue(state *st, int flag) {
     /* Max. message size (bytes) */
     ei_decode_long(st->args, &(st->index), &qattr.mq_msgsize);
 
-    P(("criando fila: %s %d %d %d %d %d\n", qname, isblocking, flag, qmode, qattr.mq_maxmsg, qattr.mq_msgsize));
+    P(("criando fila: %s %ld %d %ld %ld %ld\n", qname, isblocking, flag, qmode, qattr.mq_maxmsg, qattr.mq_msgsize));
 
 	/* do the job */
 	rs = mq_open(qname, flag | isblocking, qmode, &qattr);
@@ -424,12 +426,13 @@ static void do_send_queue(state *st) {
 	}
 
 	if (qsize != type_size) {
-		p(("Send size differ\n"));
+		P(("Send size differ\n"));
 	}
 
 	ei_decode_binary(st->args, &(st->index), qmsg, &qmsg_size);
 
-	P(("Enviando %d %d %d '%s'", qdesc, qmsg_size, qprio, qmsg));
+	P(("Enviando %ld %ld %ld", qdesc, qmsg_size, qprio));
+	data_dump(qmsg, qmsg_size);
 
 	rs = mq_send(qdesc, qmsg, qmsg_size, qprio);
 	if ( rs < 0) {
@@ -509,6 +512,40 @@ static void do_receive_queue(state *st) {
 // =============================================================================
 // Utility functions
 // =============================================================================
+
+static void data_dump(intptr_t *p, size_t n)
+{
+#ifdef ENABLE_DATA_DUMP
+#define EOS '\0';
+
+	size_t memsize = n;
+	char errmsg[1024];
+	unsigned llen = 0;
+
+	errmsg[0] = EOS;
+
+	char *cp = (char *) p;
+
+	fprintf(stderr, "\n------------------- dump begin ------------------\n");
+	fprintf(stderr, "sop_erl_dump:\n");
+	while (memsize) {
+		if (llen >= 16) {
+			strcat(errmsg, "\n");
+			llen = 0;
+			fprintf(stderr, "%s", errmsg);
+			errmsg[0] = EOS;
+		}
+		sprintf(errmsg + strlen(errmsg), " %02X",
+				(*cp++) & 0xFF);
+		llen++;
+		memsize--;
+	}
+
+	fprintf(stderr, "%s\n", errmsg);
+	fprintf(stderr, "------------------- dump end -------------------\n");
+#endif
+}
+
 void init_state(state *st, char *args, int argslen) {
   st->index = 0;
   st->version = 0;
@@ -563,7 +600,7 @@ void boolean(state *st, int code) {
 static void queue_data(ei_x_buff *eixb, const void *msg, int size, unsigned int prio) {
   ei_x_encode_tuple_header(eixb, 4);
 
-  atom(&eixb, "data", 4);
+  atom(eixb, "data", 4);
 
   ei_x_encode_long(eixb, prio);
 
@@ -600,7 +637,7 @@ static void encode_ok_queue(state *st, int queue) {
     queue_tuple(st, queue);
 }
 
-static void encode_queue_attr(st, long mq_flags, long mq_maxmsg, long mq_msgsize, long mq_curmsgs) {
+static void encode_queue_attr(state *st, long mq_flags, long mq_maxmsg, long mq_msgsize, long mq_curmsgs) {
 	tuple(&(st->eixb), 2);
 	atom(&(st->eixb), "attr", 4);
 	integer(&(st->eixb), mq_flags);
