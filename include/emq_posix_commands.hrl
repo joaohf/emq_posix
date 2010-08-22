@@ -34,3 +34,4 @@
 -define(SELECT_QUEUE, 9).
 -define(RECEIVE_QUEUE, 10).
 -define(SEND_QUEUE, 11).
+-define(DESELECT_QUEUE, 12).

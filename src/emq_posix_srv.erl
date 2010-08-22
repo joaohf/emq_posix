@@ -1,4 +1,4 @@
-%% Copyright (c) 2010, JoÃ£o Henrique Ferreira de Freitas 
+%% Copyright (c) 2010, João Henrique Ferreira de Freitas 
 %% All rights reserved.
 %%
 %% Redistribution and use in source and binary forms, with or without
@@ -32,7 +32,7 @@
 	 code_change/3]).
 
 %% Module API
--export([start_link/0, call/2, getch/0]).
+-export([start_link/0, call/2]).
 
 %% Records
 -record(state, { port, qdesc, observer }).
@@ -45,9 +45,6 @@ start_link() ->
 
 call(Cmd, Args) ->
     gen_server:call(?MODULE, {call, Cmd, Args}, infinity).
-
-getch() ->
-    gen_server:call(?MODULE, getch, infinity).
 
 %% =============================================================================
 %% Behaviour Callbacks
@@ -63,15 +60,9 @@ init(no_args) ->
     end.
 
 handle_call({call, Cmd, Args}, _From, State) ->
-    {reply, do_call(State#state.port, Cmd, Args), State};
-handle_call(getch, From, #state{ qdesc = undefined } = State) ->
-    {noreply, State#state{ qdesc = From }};
-handle_call(getch, _From, State) ->
-    {reply, -1, State}.
+    {reply, do_call(State#state.port, Cmd, Args), State}.
 
 terminate(_Reason, State) ->
-    do_call(State#state.port, ?CLOSE_QUEUE, State#state.qdesc),
-	do_call(State#state.port, ?REMOVE_QUEUE, State#state.qdesc),
     erlang:port_close(State#state.port),
     erl_ddll:unload("emq_posix").
 

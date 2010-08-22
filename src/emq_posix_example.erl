@@ -4,24 +4,29 @@
 -include("emq_posix.hrl").
 
 %%
-%% Simple countdown which shows how to print, move and get coordinates
+%% Simple 
 %%
-%% countdown() ->
-%%     application:start(cecho),
-%%     cecho:cbreak(),
-%%     cecho:noecho(),
-%%     cecho:curs_set(?ceCURS_INVISIBLE),
-%%     cecho:move(1, 1),
-%%     Flag = cecho:has_colors(),
-%%     cecho:addstr(io_lib:format("Has color: ~p",[Flag])),
-%%     print_colors(Flag),
-%%     cecho:move(10, 10),
-%%     cecho:addstr("Countdown: "),
-%%     cecho:refresh(),
-%%     count_it_down(10),
-%%     cecho:curs_set(?ceCURS_NORMAL),
-%%     timer:sleep(2000),
-%%     application:stop(cecho).
+simplesend() ->
+     application:start(emq_posix),
+     Res = emq_posix:create("/Teste1", 0, 777, 5, 1000, write),
+     Qw = case Res of
+         {mqd, Qx} -> Qx;
+         {error, Err} -> io:format("ERROR: ~w ~n", [Err])
+     end,
+     timer:sleep(2000),
+     {_, Qr} = emq_posix:open("/Teste1", 0, read),
+     timer:sleep(2000),
+     io:format("FD: ~w ~w ~n", [Qw, Qr]),
+     io:get_chars("next step>", 1),
+     emq_posix:send(Qw, 1, "Teste Teste Teste"),
+     timer:sleep(2000),
+     emq_posix:close(Qw),
+     emq_posix:close(Qr),
+     emq_posix:remove("/Teste1"),
+     emq_posix:remove("/Teste1"),
+     application:stop(emq_posix).
+
+
 %% 
 %% count_it_down(S) when S =< 0 ->
 %%     cecho:move(10, 22),

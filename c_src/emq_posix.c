@@ -30,6 +30,7 @@
 #include <fcntl.h>           /* For O_* constants */
 #include <sys/stat.h>        /* For mode constants */
 #include <mqueue.h>
+#include <sys/queue.h>
 
 #include "emq_posix.h"
 #include "emq_posix_commands.h"
@@ -38,15 +39,16 @@
 #include "ei.h"
 
 /* Queue state structure */
-typedef struct {
+typedef struct state_queue_s {
   int inuse;
   mqd_t fd_queue;
   struct mq_attr attr_queue;
+  LIST_ENTRY(state_queue_s) queues;
 } state_queue;
 
 /* State structure */
 typedef struct {
-  state_queue mq[_MAXQUEUES+1];
+  LIST_HEAD(mq_list, state_queue_s) mq_head;
   ei_x_buff eixb;
   char *args;
   int argslen;
@@ -98,6 +100,8 @@ static ErlDrvData start(ErlDrvPort port, char *command) {
   drvstate->drv_port = port;
   set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
 
+  LIST_INIT(&drvstate->mq_head);
+
   P(("Start\n"));
 
   return (ErlDrvData)drvstate;
@@ -105,13 +109,28 @@ static ErlDrvData start(ErlDrvPort port, char *command) {
 
 static void stop(ErlDrvData drvstate) {
   state *st = (state *)drvstate;
-  int i;
-  for (i = 0; i < _MAXQUEUES; i++) {
-	if (st->mq[i].inuse) {
-      driver_select(st->drv_port, (ErlDrvEvent)(st->mq[i].fd_queue), ERL_DRV_READ, 0);
-	}
+  state_queue *q = NULL;
+
+  /* Delete. */
+  while (!LIST_EMPTY(&st->mq_head)) {
+	  q = (state_queue *) LIST_FIRST(&st->mq_head);
+
+	  if (q->inuse) {
+		P(("List in use, desc '%d'\n", q->fd_queue));
+	    driver_select(st->drv_port, (ErlDrvEvent)(q->fd_queue), ERL_DRV_READ, 0);
+
+	    mq_close(q->fd_queue);
+	  }
+
+	  LIST_REMOVE(q, queues);
+
+	  driver_free(q);
+	  q = NULL;
   }
+
   driver_free(drvstate);
+
+  P(("Stop\n"));
 }
 
 static void do_readmq(ErlDrvData drvstate, ErlDrvEvent event) {
@@ -318,6 +337,8 @@ static void do_create_queue(state *st, int flag) {
       goto error_mq;
 	}
 
+	P(("fila '%s' desc '%d'\n", qname, rs));
+
     encode_ok_queue(st, rs);
     return;
 
@@ -426,12 +447,12 @@ static void do_send_queue(state *st) {
 	}
 
 	if (qsize != type_size) {
-		P(("Send size differ\n"));
+		P(("Send size differ size '%ld' type_size '%d'\n", qsize, type_size));
 	}
 
 	ei_decode_binary(st->args, &(st->index), qmsg, &qmsg_size);
 
-	P(("Enviando %ld %ld %ld", qdesc, qmsg_size, qprio));
+	P(("Enviando %ld %ld %ld\n", qdesc, qmsg_size, qprio));
 	data_dump(qmsg, qmsg_size);
 
 	rs = mq_send(qdesc, qmsg, qmsg_size, qprio);
@@ -445,6 +466,7 @@ static void do_send_queue(state *st) {
 	return;
 
 	error:
+	P(("error: %s:%d\n", __FUNCTION__, __LINE__));
 	encode_ok_reply(st, -1);
 	return;
 
@@ -452,6 +474,7 @@ static void do_send_queue(state *st) {
 	if (qmsg != NULL) {
 	  driver_free(qmsg);
 	}
+	P(("error: %d %s:%d\n", errno, __FUNCTION__, __LINE__));
 	encode_ok_reply(st, errno);
 	return;
 }
@@ -559,19 +582,43 @@ void init_state(state *st, char *args, int argslen) {
 
 static state_queue *insert_next_queue(state *st, int qdesc) {
 
-  state_queue *q;
+  state_queue *q = NULL;
 
-  memset(q, 0, sizeof(state_queue));
+  q = driver_alloc(sizeof(state_queue));
+  if (q == NULL) {
+	  goto error;
+  }
 
   q->fd_queue = qdesc;
   q->inuse = 1;
 
-  return &st->mq[0];
+  LIST_INSERT_HEAD(&st->mq_head, q, queues);
+
+  error:
+  return q;
 }
 
 static int remove_next_queue(state *st, int qdesc) {
 
+	state_queue *q = NULL;
+
+	LIST_FOREACH(q, &st->mq_head, queues) {
+
+		if (q->inuse) {
+			if (q->fd_queue == qdesc) {
+				goto found;
+			}
+		}
+	}
+
+	return 0;
+
+	found:
+	LIST_REMOVE(q, queues);
+	driver_free(q);
+	q = NULL;
 	return 1;
+
 }
 
 static void ok(state *st) {
