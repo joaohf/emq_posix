@@ -3,18 +3,44 @@
 
 -include("emq_posix.hrl").
 
+-define(QUEUETEST, "/Teste7").
+
 %%
 %% Simple 
 %%
+
+simple_send_receive() ->
+	application:start(emq_posix),
+	
+	Pid2 = spawn(?MODULE, send_mq, []),
+	timer:sleep(1000),
+	Pid1 = spawn(?MODULE, recv_mq, []),    
+	
+	Pid2 ! {send, "Teste Teste Teste"},
+	
+	timer:sleep(15000).    
+
+recv_mq() ->
+	Qr = createq(emq_posix:open(?QUEUETEST, 0, read)),
+	
+	timer:sleep(5000),
+	Res = emq_posix:recv(Qr),
+	io:format("FD: ~w ~n", [Res]).
+
+send_mq() ->
+	Qw = createq(emq_posix:create(?QUEUETEST, 0, 777, 5, 1000, write)),
+	receive
+		{send, Msg} -> emq_posix:send(Qw, 1, Msg);
+		_Other -> {error, unknow_msg}
+	end.
+
 simplesend() ->
-     application:start(emq_posix),
-     Res = emq_posix:create("/Teste1", 0, 777, 5, 1000, write),
-     Qw = case Res of
-         {mqd, Qx} -> Qx;
-         {error, Err} -> io:format("ERROR: ~w ~n", [Err])
-     end,
+     application:start(emq_posix),     
+     Qw = createq(emq_posix:create(?QUEUETEST, 0, 777, 5, 1000, write)),
+	 
      timer:sleep(2000),
-     {_, Qr} = emq_posix:open("/Teste1", 0, read),
+     Qr = createq(emq_posix:open(?QUEUETEST, 0, read)),
+	 
      timer:sleep(2000),
      io:format("FD: ~w ~w ~n", [Qw, Qr]),
      io:get_chars("next step>", 1),
@@ -22,11 +48,19 @@ simplesend() ->
      timer:sleep(2000),
      emq_posix:close(Qw),
      emq_posix:close(Qr),
-     emq_posix:remove("/Teste1"),
-     emq_posix:remove("/Teste1"),
+     emq_posix:remove(?QUEUETEST),
+     emq_posix:remove(?QUEUETEST),
      application:stop(emq_posix).
 
+createq({mqd, Desc}) -> 
+	Desc;
+createq({error, Err}) ->
+	{error, Err}.
 
+error_report({error, What}) ->
+	io:format("ERROR: ~w ~n", [What]).
+
+	
 %% 
 %% count_it_down(S) when S =< 0 ->
 %%     cecho:move(10, 22),
