@@ -143,7 +143,11 @@ static void do_readmq(ErlDrvData drvstate, ErlDrvEvent event) {
   int rs = 0;
   struct mq_attr attr;
 
+  memset(&attr, 0, sizeof(struct mq_attr));
+
   ei_x_new_with_version(&eixb);
+
+  P(("select\n"));
 
   rs = mq_getattr((mqd_t) event, &attr);
   if ( rs < 0 ) {
@@ -165,16 +169,26 @@ static void do_readmq(ErlDrvData drvstate, ErlDrvEvent event) {
 	  goto mq_error;
   }
 
+  P(("select event '%d' len '%d' prio '%d' data '%s'\n", (mqd_t)event, msg_len, msg_prio, msg_ptr));
+
+  //data_dump(msg_ptr, msg_len);
+
   queue_data(&eixb, msg_ptr, smq, msg_prio);
 
   driver_output(st->drv_port, eixb.buff, eixb.index);
 
   driver_free(msg_ptr);
 
+  ei_x_free(&eixb);
+
+  return;
+
   error:
+  P(("select error\n"));
   return;
 
   mq_error:
+  P(("select mq error\n"));
   return;
 }
 
