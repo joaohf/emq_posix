@@ -33,7 +33,7 @@
 %% Application API
 
 -export([open/3, create/6, close/1, remove/1, getattr/1,
-         send/3, recv/1, select/1, deselect/1]). 
+         send/3, recv/1, select/2, deselect/1]). 
 
 %% =============================================================================
 %% Application API
@@ -75,8 +75,8 @@ send(QueueDesc, Priority, Msg) when is_integer(QueueDesc) andalso is_integer(Pri
 recv(QueueDesc) when is_integer(QueueDesc) ->
         call(?RECEIVE_QUEUE, QueueDesc).
 
-select(QueueDesc) when is_integer(QueueDesc) ->
-        call(?SELECT_QUEUE, QueueDesc).
+select(QueueDesc, DestPid) when is_integer(QueueDesc) andalso is_pid(DestPid)->
+        call(?SELECT_QUEUE, {QueueDesc, DestPid}).
 
 deselect(QueueDesc) when is_integer(QueueDesc) ->
         call(?DESELECT_QUEUE, QueueDesc).

@@ -41,6 +41,7 @@
 /* Queue state structure */
 typedef struct state_queue_s {
   int inuse;
+  ErlDrvTermData callback_pid;
   mqd_t fd_queue;
   struct mq_attr attr_queue;
   LIST_ENTRY(state_queue_s) queues;
@@ -59,7 +60,8 @@ typedef struct {
 
 static void data_dump(intptr_t *p, size_t n);
 static void init_state(state *st, char *args, int argslen);
-static state_queue *insert_next_queue(state *st, int qdesc);
+static state_queue *insert_next_queue(state *st, int qdesc, erlang_pid *destpid);
+static int search_queue(state *st, int qdesc, ErlDrvTermData *pid);
 static int remove_next_queue(state *st, int qdesc);
 static void ok(state *st);
 static void error_tuple(state *st, int code);
@@ -102,7 +104,7 @@ static ErlDrvData start(ErlDrvPort port, char *command) {
 
   LIST_INIT(&drvstate->mq_head);
 
-  P(("Start\n"));
+  P(("Start\r\n"));
 
   return (ErlDrvData)drvstate;
 }
@@ -116,7 +118,7 @@ static void stop(ErlDrvData drvstate) {
 	  q = (state_queue *) LIST_FIRST(&st->mq_head);
 
 	  if (q->inuse) {
-		P(("List in use, desc '%d'\n", q->fd_queue));
+		P(("List in use, desc '%d'\r\n", q->fd_queue));
 	    driver_select(st->drv_port, (ErlDrvEvent)(q->fd_queue), ERL_DRV_READ, 0);
 
 	    mq_close(q->fd_queue);
@@ -130,24 +132,29 @@ static void stop(ErlDrvData drvstate) {
 
   driver_free(drvstate);
 
-  P(("Stop\n"));
+  P(("Stop\r\n"));
 }
 
 static void do_readmq(ErlDrvData drvstate, ErlDrvEvent event) {
   state *st = (state *)drvstate;
   ei_x_buff eixb;
-  ssize_t smq = 0;
+  ssize_t ret_msg_len = 0;
   char *msg_ptr = NULL;
   size_t msg_len = 0;
   unsigned int msg_prio = 0;
   int rs = 0;
   struct mq_attr attr;
+  ErlDrvTermData to_pid;
+
+  ErlDrvTermData spec[11];
+
+  int i = 0;
 
   memset(&attr, 0, sizeof(struct mq_attr));
 
   ei_x_new_with_version(&eixb);
 
-  P(("select\n"));
+  P(("select\r\n"));
 
   rs = mq_getattr((mqd_t) event, &attr);
   if ( rs < 0 ) {
@@ -164,18 +171,35 @@ static void do_readmq(ErlDrvData drvstate, ErlDrvEvent event) {
 	  goto error;
   }
 
-  smq = mq_receive((mqd_t) event, msg_ptr, msg_len, &msg_prio);
-  if ( smq < 0 ) {
+  ret_msg_len = mq_receive((mqd_t) event, msg_ptr, msg_len, &msg_prio);
+  if ( ret_msg_len < 0 ) {
 	  goto mq_error;
   }
 
-  P(("select event '%d' len '%d' prio '%d' data '%s'\n", (mqd_t)event, msg_len, msg_prio, msg_ptr));
+  P(("select event '%d' len '%d' prio '%d'\r\n", (mqd_t)event, ret_msg_len, msg_prio));
 
-  //data_dump(msg_ptr, msg_len);
+  data_dump(msg_ptr, ret_msg_len);
 
-  queue_data(&eixb, msg_ptr, smq, msg_prio);
+  //queue_data(&eixb, msg_ptr, smq, msg_prio);
 
-  driver_output(st->drv_port, eixb.buff, eixb.index);
+  // {data, prio, size, bin}
+  spec[i+0] = ERL_DRV_ATOM;
+  spec[i+1] = driver_mk_atom("data");
+  spec[i+2] = ERL_DRV_INT;
+  spec[i+3] = msg_prio;
+  spec[i+4] = ERL_DRV_INT;
+  spec[i+5] = ret_msg_len;
+  spec[i+6] = ERL_DRV_BUF2BINARY;
+  spec[i+7] = (ErlDrvTermData)msg_ptr;
+  spec[i+8] = ret_msg_len;
+  spec[i+9] = ERL_DRV_TUPLE;
+  spec[i+10] = 4;
+
+  rs = search_queue(st, (int) event, &to_pid);
+
+  //driver_output(st->drv_port, eixb.buff, eixb.index);
+
+  driver_send_term(st->drv_port, to_pid, spec, sizeof(spec) / sizeof(spec[0]));
 
   driver_free(msg_ptr);
 
@@ -184,11 +208,11 @@ static void do_readmq(ErlDrvData drvstate, ErlDrvEvent event) {
   return;
 
   error:
-  P(("select error\n"));
+  P(("select error\r\n"));
   return;
 
   mq_error:
-  P(("select mq error\n"));
+  P(("select mq error\r\n"));
   return;
 }
 
@@ -197,7 +221,7 @@ static int control(ErlDrvData drvstate, unsigned int command, char *args,
   state *st = (state *)drvstate;
   init_state(st, args, argslen);
 
-  P(("comando: %d\n", command));
+  P(("command: %d\r\n", command));
 
   switch (command) {
   case OPEN_QUEUE_RDONLY: do_open_queue(st, O_RDONLY); break;
@@ -238,13 +262,18 @@ static void do_initselect_queue(state *st) {
 
   int arity = 0;
   long qdesc = 0;
+
+  erlang_pid destpid;
+
   state_queue *q;
 
   ei_decode_tuple_header(st->args, &(st->index), &arity);
   /* queue desc */
   ei_decode_long(st->args, &(st->index), &qdesc);
+  /* dest pid */
+  ei_decode_pid(st->args, &(st->index), &destpid);
 
-  q = insert_next_queue(st, qdesc);
+  q = insert_next_queue(st, qdesc, &destpid);
 
   if (q == NULL) {
     goto error;
@@ -342,7 +371,7 @@ static void do_create_queue(state *st, int flag) {
     /* Max. message size (bytes) */
     ei_decode_long(st->args, &(st->index), &qattr.mq_msgsize);
 
-    P(("criando fila: %s %ld %d %ld %ld %ld\n", qname, isblocking, flag, qmode, qattr.mq_maxmsg, qattr.mq_msgsize));
+    P(("create queue: %s %ld %d %ld %ld %ld\r\n", qname, isblocking, flag, qmode, qattr.mq_maxmsg, qattr.mq_msgsize));
 
 	/* do the job */
 	rs = mq_open(qname, flag | isblocking, qmode, &qattr);
@@ -351,7 +380,7 @@ static void do_create_queue(state *st, int flag) {
       goto error_mq;
 	}
 
-	P(("fila '%s' desc '%d'\n", qname, rs));
+	P(("queue '%s' desc '%d'\r\n", qname, rs));
 
     encode_ok_queue(st, rs);
     return;
@@ -461,12 +490,12 @@ static void do_send_queue(state *st) {
 	}
 
 	if (qsize != type_size) {
-		P(("Send size differ size '%ld' type_size '%d'\n", qsize, type_size));
+		P(("Send size differ size '%ld' type_size '%d'\r\n", qsize, type_size));
 	}
 
 	ei_decode_binary(st->args, &(st->index), qmsg, &qmsg_size);
 
-	P(("Enviando %ld %ld %ld\n", qdesc, qmsg_size, qprio));
+	P(("Enviando %ld %ld %ld\r\n", qdesc, qmsg_size, qprio));
 	data_dump(qmsg, qmsg_size);
 
 	rs = mq_send(qdesc, qmsg, qmsg_size, qprio);
@@ -480,7 +509,7 @@ static void do_send_queue(state *st) {
 	return;
 
 	error:
-	P(("error: %s:%d\n", __FUNCTION__, __LINE__));
+	P(("error: %s:%d\r\n", __FUNCTION__, __LINE__));
 	encode_ok_reply(st, -1);
 	return;
 
@@ -488,7 +517,7 @@ static void do_send_queue(state *st) {
 	if (qmsg != NULL) {
 	  driver_free(qmsg);
 	}
-	P(("error: %d %s:%d\n", errno, __FUNCTION__, __LINE__));
+	P(("error: %d %s:%d\r\n", errno, __FUNCTION__, __LINE__));
 	encode_ok_reply(st, errno);
 	return;
 }
@@ -563,11 +592,11 @@ static void data_dump(intptr_t *p, size_t n)
 
 	char *cp = (char *) p;
 
-	fprintf(stderr, "\n------------------- dump begin ------------------\n");
-	fprintf(stderr, "sop_erl_dump:\n");
+	fprintf(stderr, "\r\n------------------- dump begin ------------------\r\n");
+
 	while (memsize) {
 		if (llen >= 16) {
-			strcat(errmsg, "\n");
+			strcat(errmsg, "\r\n");
 			llen = 0;
 			fprintf(stderr, "%s", errmsg);
 			errmsg[0] = EOS;
@@ -578,8 +607,8 @@ static void data_dump(intptr_t *p, size_t n)
 		memsize--;
 	}
 
-	fprintf(stderr, "%s\n", errmsg);
-	fprintf(stderr, "------------------- dump end -------------------\n");
+	fprintf(stderr, "%s\r\n", errmsg);
+	fprintf(stderr, "------------------- dump end -------------------\r\n");
 #endif
 }
 
@@ -594,7 +623,9 @@ void init_state(state *st, char *args, int argslen) {
   ei_x_new_with_version(&(st->eixb));
 }
 
-static state_queue *insert_next_queue(state *st, int qdesc) {
+static state_queue *insert_next_queue(state *st, int qdesc, erlang_pid *destpid) {
+
+#define MAKE_CALLBACK_PID(x) ((ErlDrvTermData)( (( (*x).serial << 15 | (*x).num)) << 4 | (0x0 << 2 | 0x3)) );
 
   state_queue *q = NULL;
 
@@ -603,6 +634,8 @@ static state_queue *insert_next_queue(state *st, int qdesc) {
 	  goto error;
   }
 
+  /* From: http://dudefrommangalore.blogspot.com/2009_03_01_archive.html */
+  q->callback_pid = MAKE_CALLBACK_PID(destpid);
   q->fd_queue = qdesc;
   q->inuse = 1;
 
@@ -610,6 +643,27 @@ static state_queue *insert_next_queue(state *st, int qdesc) {
 
   error:
   return q;
+}
+
+static int search_queue(state *st, int qdesc, ErlDrvTermData *pid) {
+
+	state_queue *q = NULL;
+
+	LIST_FOREACH(q, &st->mq_head, queues) {
+
+		if (q->inuse) {
+			if (q->fd_queue == qdesc) {
+				goto found;
+			}
+		}
+	}
+
+	return ;
+
+	found:
+	*pid = q->callback_pid;
+	return 1;
+
 }
 
 static int remove_next_queue(state *st, int qdesc) {

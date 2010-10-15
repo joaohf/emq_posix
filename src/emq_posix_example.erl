@@ -9,6 +9,24 @@
 %% Simple 
 %%
 
+simple_send() ->
+     application:start(emq_posix),     
+     Qw = createq(emq_posix:create(?QUEUETEST, 0, 777, 5, 1000, write)),
+	 
+     timer:sleep(2000),
+     Qr = createq(emq_posix:open(?QUEUETEST, 0, read)),
+	 
+     timer:sleep(2000),
+     io:format("FD: ~w ~w ~n", [Qw, Qr]),
+     io:get_chars("next step>", 1),
+     emq_posix:send(Qw, 1, "Teste Teste Teste"),
+     timer:sleep(2000),
+     emq_posix:close(Qw),
+     emq_posix:close(Qr),
+     emq_posix:remove(?QUEUETEST),
+     emq_posix:remove(?QUEUETEST),
+     application:stop(emq_posix).
+
 simple_send_receive_select() ->
 	application:start(emq_posix),
 	
@@ -17,8 +35,9 @@ simple_send_receive_select() ->
 	
 	Pid2 = spawn(?MODULE, send_mq, [Qw]),	
 	Pid1 = spawn(?MODULE, recv_mq, [Qr]),
+	Pid3 = spawn(?MODULE, recv_mq_select, []),
 	
-	emq_posix:select(Qr),
+	emq_posix:select(Qr, Pid3),
 	
 	Pid2 ! {send, "Teste Teste Teste 1"},
 	Pid2 ! {send, "Teste Teste Teste 2"},
@@ -28,7 +47,7 @@ simple_send_receive_select() ->
 %% 	Pid1 ! {rcv_mq},
 %% 	Pid1 ! {rcv_mq},
 	
-%%	recv_mq_select(),
+	timer:sleep(15000),
 	
 	emq_posix:close(Qw),
     emq_posix:close(Qr),    
@@ -60,12 +79,18 @@ simple_send_receive() ->
     emq_posix:remove(?QUEUETEST),
     application:stop(emq_posix).
 
+%%
+%% Internal
+%%
+
 recv_mq_select() ->	
 	receive
-		{data, _, _, Data} -> 
-					io:format("FD: ~w ~n", [Data]),
-					recv_mq_select()
+		{data, _, _, Data} ->
+			        MyString = binary_to_term(Data),
+					io:format("recv_mq_select: ~w ~n", [MyString]),
+	                recv_mq_select()				  
 	end.
+	
 
 recv_mq(Queue) ->	
 	receive
@@ -80,28 +105,11 @@ recv_mq(Queue) ->
 
 send_mq(Queue) ->	
 	receive
-		{send, Msg} -> emq_posix:send(Queue, 1, Msg);
+		{send, Msg} -> io:format("send ~w ~n", [Msg]),
+					   emq_posix:send(Queue, 1, Msg);
 		_ -> {error, unknow_msg}
 	end,
 	send_mq(Queue).
-
-simplesend() ->
-     application:start(emq_posix),     
-     Qw = createq(emq_posix:create(?QUEUETEST, 0, 777, 5, 1000, write)),
-	 
-     timer:sleep(2000),
-     Qr = createq(emq_posix:open(?QUEUETEST, 0, read)),
-	 
-     timer:sleep(2000),
-     io:format("FD: ~w ~w ~n", [Qw, Qr]),
-     io:get_chars("next step>", 1),
-     emq_posix:send(Qw, 1, "Teste Teste Teste"),
-     timer:sleep(2000),
-     emq_posix:close(Qw),
-     emq_posix:close(Qr),
-     emq_posix:remove(?QUEUETEST),
-     emq_posix:remove(?QUEUETEST),
-     application:stop(emq_posix).
 
 createq({mqd, Desc}) -> 
 	Desc;
